@@ -39,9 +39,13 @@ async def _reject_if_banned(target, user_id: int) -> bool:
 
 # ----------------------------------------------------------------- вход в раздел заказа
 @router.message(F.text == BTN_ORDER)
-async def order_start(message: Message):
+async def order_start(message: Message, state: FSMContext):
     if await _reject_if_banned(message, message.from_user.id):
         return
+    # сбрасываем незавершённое оформление (если пользователь был на шаге
+    # ввода количества/ссылки другого заказа или пополнения) — раньше это
+    # не делалось здесь, и вход в раздел заново не начинал состояние с чистого листа
+    await state.clear()
     await message.answer("Выберите платформу:", reply_markup=platforms_kb())
 
 
@@ -54,9 +58,10 @@ async def nav_menu(callback: CallbackQuery, state: FSMContext):
 
 # ----------------------------------------------------------------- бесплатное продвижение
 @router.message(F.text == BTN_FREE_PROMO)
-async def free_promo_start(message: Message):
+async def free_promo_start(message: Message, state: FSMContext):
     if await _reject_if_banned(message, message.from_user.id):
         return
+    await state.clear()
     await message.answer("🆓 Бесплатное продвижение — выберите платформу:", reply_markup=free_promo_platforms_kb())
 
 
@@ -179,9 +184,9 @@ async def interrupt_order_flow(message: Message, state: FSMContext):
     elif text == BTN_HELP:
         await help_start(message, state)
     elif text == BTN_ORDER:
-        await order_start(message)
+        await order_start(message, state)
     elif text == BTN_FREE_PROMO:
-        await free_promo_start(message)
+        await free_promo_start(message, state)
 
 
 @router.message(OrderStates.waiting_amount, F.text == BTN_BACK)
