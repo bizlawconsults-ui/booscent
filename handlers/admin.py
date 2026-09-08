@@ -90,10 +90,18 @@ async def admin_topup_action(callback: CallbackQuery, state: FSMContext):
         await callback.answer(f"Заявка уже обработана: {topup['status']}", show_alert=True)
         return
 
+    # ✅/❌ можно нажать в двух местах: под самим фото-чеком (тогда callback.message —
+    # это фото с подписью, и её можно потом отредактировать) или в разделе
+    # "💳 Пополнения" (там callback.message — обычный текстовый список без фото).
+    # Раньше msg_chat_id/msg_id сохранялись всегда, и во втором случае
+    # edit_message_caption ниже падал (у текстового сообщения нет caption) —
+    # ошибка тихо проглатывалась, а исходный чек так и оставался без пометки
+    # "Принято/Отклонено". Теперь сохраняем id только когда это реально фото.
+    has_receipt_photo = bool(callback.message.photo)
     await state.update_data(
         topup_id=topup_id,
-        msg_chat_id=callback.message.chat.id,
-        msg_id=callback.message.message_id,
+        msg_chat_id=callback.message.chat.id if has_receipt_photo else None,
+        msg_id=callback.message.message_id if has_receipt_photo else None,
     )
 
     if action == "approve":
@@ -117,6 +125,10 @@ async def admin_topup_action(callback: CallbackQuery, state: FSMContext):
 @router.message(Command("cancel"), AdminTopupStates.waiting_reason)
 @router.message(Command("cancel"), AdminTopupStates.confirm_reason)
 @router.message(Command("cancel"), AdminOrderStates.waiting_cancel_reason)
+# ORDERS_CHAT_ID — канал: текст, написанный туда админом (даже командой),
+# приходит боту как channel_post, а не message. Без этого дубля /cancel
+# для отмены заказа не срабатывал бы, если писать прямо в канал.
+@router.channel_post(Command("cancel"), AdminOrderStates.waiting_cancel_reason)
 async def admin_topup_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Отменено.")
@@ -236,13 +248,14 @@ async def admin_topup_confirm(callback: CallbackQuery, state: FSMContext, bot: B
             f"Баланс: {new_balance} so'm"
         )
 
-        try:
-            await bot.edit_message_caption(
-                chat_id=data["msg_chat_id"], message_id=data["msg_id"],
-                caption=f"💰 Заявка на пополнение №{topup_id}\n\n✅ Принято, начислено {amount} so'm",
-            )
-        except Exception:
-            pass
+        if data.get("msg_id"):
+            try:
+                await bot.edit_message_caption(
+                    chat_id=data["msg_chat_id"], message_id=data["msg_id"],
+                    caption=f"💰 Заявка на пополнение №{topup_id}\n\n✅ Принято, начислено {amount} so'm",
+                )
+            except Exception:
+                pass
 
         try:
             await bot.send_message(
@@ -268,13 +281,14 @@ async def admin_topup_confirm(callback: CallbackQuery, state: FSMContext, bot: B
             f"❌ Заявка №{topup_id} отклонена.\nПричина: {reason}"
         )
 
-        try:
-            await bot.edit_message_caption(
-                chat_id=data["msg_chat_id"], message_id=data["msg_id"],
-                caption=f"💰 Заявка на пополнение №{topup_id}\n\n❌ Отклонено\nПричина: {reason}",
-            )
-        except Exception:
-            pass
+        if data.get("msg_id"):
+            try:
+                await bot.edit_message_caption(
+                    chat_id=data["msg_chat_id"], message_id=data["msg_id"],
+                    caption=f"💰 Заявка на пополнение №{topup_id}\n\n❌ Отклонено\nПричина: {reason}",
+                )
+            except Exception:
+                pass
 
         try:
             await bot.send_message(
@@ -394,6 +408,14 @@ async def admin_order_status(callback: CallbackQuery, state: FSMContext, bot: Bo
 
 
 @router.message(AdminOrderStates.waiting_cancel_reason)
+# ORDERS_CHAT_ID — канал ("Канал, куда падают новые заявки" в config.py).
+# Сообщения, которые админ пишет прямо в канал, Telegram присылает боту
+# как channel_post, а НЕ как message — @router.message их не видит вообще.
+# Из-за этого весь шаг "напишите причину отмены" зависал: кнопки (callback)
+# работали, а текст причины бот не получал. Регистрируем тот же обработчик
+# и на channel_post, чтобы отмена заказа работала независимо от того,
+# в каком из двух чатов (ADMIN_CHAT_ID или канал ORDERS_CHAT_ID) она начата.
+@router.channel_post(AdminOrderStates.waiting_cancel_reason)
 async def admin_order_cancel_reason(message: Message, state: FSMContext, bot: Bot):
     if not _is_order_action_chat(message.chat.id):
         return
@@ -420,10 +442,14 @@ async def admin_order_cancel_reason(message: Message, state: FSMContext, bot: Bo
         await state.clear()
         return
 
+    # message.from_user может быть None, если пост в канале отправлен
+    # анонимно "от имени канала" — тогда лог возврата пишем без admin_id,
+    # а не падаем с AttributeError.
+    admin_id = message.from_user.id if message.from_user else None
     if order["price"] > 0:
         await db.change_balance(
             order["user_id"], order["price"],
-            admin_id=message.from_user.id, reason=f"Возврат за отменённый заказ №{order_id}: {reason}",
+            admin_id=admin_id, reason=f"Возврат за отменённый заказ №{order_id}: {reason}",
         )
 
     await message.answer(f"🚫 Заказ №{order_id} отменён. Причина: {reason}")
