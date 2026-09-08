@@ -105,9 +105,9 @@ async def interrupt_topup_flow(message: Message, state: FSMContext):
     elif text == BTN_HELP:
         await help_start(message, state)
     elif text == BTN_ORDER:
-        await order_start(message)
+        await order_start(message, state)
     elif text == BTN_FREE_PROMO:
-        await free_promo_start(message)
+        await free_promo_start(message, state)
 
 
 @router.message(TopUpStates.waiting_receipt)
